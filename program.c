@@ -27,21 +27,23 @@ typedef struct __attribute__((__packed__)) {
     uint8_t BS_FilSysType[ 8 ]; // e.g. 'FAT16 ' (Not 0 term.)
 } BootSector;
 
-int fd;
-int data;
-BootSector bootSector;
-uint16_t *startOfFAT;
+BootSector getBootSector(int fd)
+{
+    BootSector bootSector;
+    BootSector *buf = (BootSector*)malloc(sizeof(BootSector));
+    read(fd,buf,sizeof(BootSector));
+    bootSector = *buf;
+    free(buf);
+    return (bootSector);
+}
 
 int main()
 {
     printf("Hello World\n");
 
-    fd = open("fat16.img",O_RDONLY);
+    int fd = open("fat16.img",O_RDONLY);
 
-    BootSector *buf = (BootSector*)malloc(sizeof(BootSector));
-    read(fd,buf,sizeof(BootSector));
-    bootSector = *buf;
-    free(buf);
+    BootSector bootSector = getBootSector(fd);
 
     printf("BPB_BytsPerSec: %i\n",  bootSector.BPB_BytsPerSec);
     printf("BPB_SecPerClus: %i\n",  bootSector.BPB_SecPerClus);
@@ -59,11 +61,15 @@ int main()
     int offSetValue = bootSector.BPB_BytsPerSec * bootSector.BPB_RsvdSecCnt;
 
     lseek(fd,offSetValue,SEEK_SET);
-    int *bufa = (int*)malloc(sizeof(int));
+    int *bufa = (int*)malloc(bootSector.BPB_NumFATs*sizeof(int));
     read(fd,bufa,sizeof(int));
-    printf("%i",*bufa);
+    printf("%i\n",bufa[0]);
+    printf("%i\n",bufa[1]);
 
     close(fd);
-
 }
+
+
+
+
 
