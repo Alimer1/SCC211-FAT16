@@ -28,37 +28,77 @@ typedef struct __attribute__((__packed__))
     uint8_t     BS_FilSysType[ 8 ]; // e.g. 'FAT16 ' (Not 0 term.)
 } BootSector;
 
-typedef struct ListElement
+typedef struct __attribute__((__packed__))
+{
+    uint8_t DIR_Name[ 11 ];     // Non zero terminated string
+    uint8_t DIR_Attr;           // File attributes
+    uint8_t DIR_NTRes;          // Used by Windows NT, ignore
+    uint8_t DIR_CrtTimeTenth;   // Tenths of sec. 0...199
+    uint16_t DIR_CrtTime;       // Creation Time in 2s intervals
+    uint16_t DIR_CrtDate;       // Date file created
+    uint16_t DIR_LstAccDate;    // Date of last read or write
+    uint16_t DIR_FstClusHI;     // Top 16 bits file's 1st cluster
+    uint16_t DIR_WrtTime;       // Time of last write
+    uint16_t DIR_WrtDate;       // Date of last write
+    uint16_t DIR_FstClusLO;     // Lower 16 bits file's 1st cluster
+    uint32_t DIR_FileSize;      // File size in bytes
+} File;
+
+typedef struct LinkedListElement
 {
     int16_t value;
-    struct ListElement *next;
-} ListElement;
+    struct LinkedListElement *nextElement;
+} LinkedListElement;
 
 BootSector getBootSector(int fd)
 {
     BootSector bootSector;
-    BootSector *buf = (BootSector*)malloc(sizeof(BootSector));
-    read(fd,buf,sizeof(BootSector));
-    bootSector = *buf;
-    free(buf);
+    BootSector *buffer = (BootSector*)malloc(sizeof(BootSector));
+    read(fd,buffer,sizeof(BootSector));
+    bootSector = *buffer;
+    free(buffer);
     return (bootSector);
 }
 
-void addToList(ListElement *startOfList,uint16_t value)
+void addToList(struct LinkedListElement *head,int16_t value)
 {
-    ListElement *element;
-    element->value = value;
-    element->next = NULL;
-    while(startOfList->next != NULL)
+    struct LinkedListElement *newElement = NULL;
+    newElement = malloc(sizeof(struct LinkedListElement));
+    newElement->value = value;
+    newElement->nextElement = NULL;
+    while(head->nextElement != NULL)
     {
-        startOfList = startOfList->next;
+        head = head->nextElement;
     }
-    startOfList->next = element;
+    head->nextElement = newElement;
+}
+
+void freeList(struct LinkedListElement *head)
+{
+    struct LinkedListElement *last;
+    while(head != NULL)
+    {
+        last = head;
+        head = head->nextElement;
+        free(last);
+    }
+}
+
+void printList(struct LinkedListElement *head)
+{
+    printf("Linked List Values:\n");
+    struct LinkedListElement *last;
+    while(head != NULL)
+    {
+        last = head;
+        head = head->nextElement;
+        printf("%i\n",last->value);
+    }
 }
 
 int main()
 {
-    printf("Hello World\n");
+    //printf("Hello World\n");
 
     int fd = open("fat16.img",O_RDONLY);
 
@@ -78,35 +118,55 @@ int main()
         printf("BS_VolLab[%i]: %i\n",i,bootSector.BS_VolLab[i]);
     }
 
-    int offSetValue = bootSector.BPB_BytsPerSec * bootSector.BPB_RsvdSecCnt;
+    int fATOffSet = bootSector.BPB_BytsPerSec * bootSector.BPB_RsvdSecCnt;
+    int fATSectionSize = bootSector.BPB_BytsPerSec * bootSector.BPB_FATSz16;
 
-    lseek(fd,offSetValue,SEEK_SET);
-    int16_t *bufa = (int16_t*)malloc(sizeof(int16_t)*bootSector.BPB_FATSz16);
-    read(fd,bufa,sizeof(int16_t)*bootSector.BPB_FATSz16);
+    lseek(fd,fATOffSet,SEEK_SET);
+    int16_t* firstFAT = (int16_t*)malloc(fATSectionSize);
+    read(fd,firstFAT,fATSectionSize);
 
-    for(int i=0;i<bootSector.BPB_FATSz16;i++)
+    int rootDirectoryOffSet = bootSector.BPB_BytsPerSec * (bootSector.BPB_RsvdSecCnt + (bootSector.BPB_NumFATs * bootSector.BPB_FATSz16));
+    int rootDirectorySize = bootSector.BPB_BytsPerSec * sizeof(File);
+
+    lseek(fd,rootDirectoryOffSet,SEEK_SET);
+    File* rootDirectory = (File*)malloc(sizeof(rootDirectorySize));
+    read(fd,rootDirectory,rootDirectorySize);
+
+    printf("First File Name:");
+    for(int i=0;i<11;i++)
     {
-        printf("FAT [%i]: %i\n",i,bufa[i]);
+        printf("%c",rootDirectory[0].DIR_Name[i]);
     }
+    printf("\n");
 
-    ListElement *listStart;
-    listStart->value = 17;
-    listStart->next = NULL;
-    ListElement *listTop = listStart;
-    int loop = 1;
+    /*
 
-    while(loop == 1)
+    Too much to display I think everything is correct.
+
+    for(int i=0;i<600;i++)
     {
-        if(bufa[listTop->value]<= 0xfff8)
-        {
-            loop = 0;
-        }
-        else
-        {
-            addToList(listStart,bufa[listTop->value]);
-            listTop = listTop->next;
-        }
+        printf("FAT Array[%i]:%i\n",i,firstFAT[i]);
     }
+    */
+    
 
+    struct LinkedListElement *head = NULL;
+    head = malloc(sizeof(struct LinkedListElement));
+
+    head->value = 5;   //Search Head Value
+    head->nextElement = NULL;
+
+    int currentValue = head->value;
+    while(currentValue>=0)
+    {
+        addToList(head,firstFAT[currentValue]);
+        currentValue = firstFAT[currentValue];
+    }
+    printList(head);
+    freeList(head);
+
+    printf("Size of a file???: %li\n",sizeof(File));
+    free(rootDirectory);
+    free(firstFAT);
     close(fd);
 }
