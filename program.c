@@ -44,6 +44,24 @@ typedef struct __attribute__((__packed__))
 	uint32_t	DIR_FileSize;       // File size in bytes
 } DirectoryEntry;
 
+typedef struct __attribute__((__packed__))
+{
+    uint8_t		LDIR_Ord;		    // Order/ position in sequence
+	uint8_t     LDIR_Name1[ 10 ];	// First 5 UNICODE characters
+	uint8_t		LDIR_Attr;		    // = ATTR_LONG_NAME
+	uint8_t		LDIR_Type;		    // Should = 0
+	uint8_t		LDIR_Chksum;		// Checksum of short name
+	uint8_t     LDIR_Name2[ 12 ];	// Middle 6 UNICODE characters
+	uint16_t	LDIR_FstClusLO;		// MUST be zero
+	uint8_t     LDIR_Name3[ 4 ];	// Last 2 UNICODE characters
+} LongDirectoryEntry;
+
+typedef union Entry
+{
+    DirectoryEntry      dE;
+    LongDirectoryEntry lDE;
+} Entry;
+
 typedef struct LinkedListElement
 {
     int16_t value;
@@ -63,6 +81,12 @@ typedef struct Time
     int minutes;
     int hours;
 } Time;
+
+typedef struct WholeFile
+{
+    int     clusterCount;   //Total number of clusters
+    void*   data;           //Pointer to the all the clusters combined.
+} WholeFile;
 
 Date getDateInfo(uint16_t date)
 {
@@ -122,11 +146,33 @@ void printDirectoryEntry(DirectoryEntry givenDE)
     printf("    ");
     printf("%02d/%02d/%04d",writeDate.day,writeDate.month,writeDate.year);
     printf("    ");
-    printf("%04X %04X",givenDE.DIR_FstClusHI,givenDE.DIR_FstClusLO);
+    printf("0x%04X 0x%04X",givenDE.DIR_FstClusHI,givenDE.DIR_FstClusLO);
     printf("    ");
     printf("%i bytes\n",givenDE.DIR_FileSize);
 }
 
+void printDirectory(DirectoryEntry *directoryEntryArray,int directoryElementCount)
+{
+    printf("    FILE-NAME      ATTR      WRT-TIME    WRT-DATE      FIRST-CLUSTER    FILE-SIZE\n");
+    for(int i=0;i<directoryElementCount;i++)
+    {
+        Entry pastEntry;
+        pastEntry.dE = directoryEntryArray[i-1];
+        LongDirectoryEntry currentLDE = pastEntry.lDE;
+        DirectoryEntry currentDE = directoryEntryArray[i];
+        if(!(currentDE.DIR_Name[0] == 0x00 ||currentDE.DIR_Name[0] == 0xE5))
+        {
+            if((((currentDE.DIR_Attr >> 0) & 0x0F) == 0x0F) && (((currentDE.DIR_Attr >> 4) & 0x03) == 0x00))
+            {}
+            else
+            {
+                printDirectoryEntry(currentDE);
+            }
+        }
+    }
+}
+
+//Returns the boot sector given an fd
 BootSector readBootSector(int fd)
 {
     BootSector bootSector;
@@ -137,10 +183,9 @@ BootSector readBootSector(int fd)
     return (bootSector);
 }
 
-void addToList(struct LinkedListElement *head,int16_t value)
+void addToList(LinkedListElement *head,int16_t value)
 {
-    struct LinkedListElement *newElement = NULL;
-    newElement = malloc(sizeof(struct LinkedListElement));
+    LinkedListElement *newElement = malloc(sizeof(LinkedListElement));
     newElement->value = value;
     newElement->nextElement = NULL;
     while(head->nextElement != NULL)
@@ -150,9 +195,9 @@ void addToList(struct LinkedListElement *head,int16_t value)
     head->nextElement = newElement;
 }
 
-void freeList(struct LinkedListElement *head)
+void freeList(LinkedListElement *head)
 {
-    struct LinkedListElement *last;
+    LinkedListElement *last;
     while(head != NULL)
     {
         last = head;
@@ -161,16 +206,66 @@ void freeList(struct LinkedListElement *head)
     }
 }
 
-void printList(struct LinkedListElement *head)
+void printList(LinkedListElement *head)
 {
     printf("Linked List Values:\n");
-    struct LinkedListElement *last;
+    LinkedListElement *last;
     while(head != NULL)
     {
         last = head;
         head = head->nextElement;
         printf("%i\n",last->value);
     }
+}
+
+//Returns the a pointer to the location of the given clusterID
+uint8_t *getCluster(uint16_t clusterID,BootSector bS,int fd)
+{
+    int initalOffset = (bS.BPB_BytsPerSec * (bS.BPB_RsvdSecCnt + (bS.BPB_NumFATs * bS.BPB_FATSz16)) + (bS.BPB_RootEntCnt * sizeof(DirectoryEntry)));
+    int clusterSize = bS.BPB_BytsPerSec * bS.BPB_SecPerClus;
+    int extraOffset = (clusterID - 2) * clusterSize;
+    lseek(fd,initalOffset + extraOffset,SEEK_SET);
+    uint8_t *cluster = malloc(clusterSize);
+    read(fd,cluster,clusterSize);
+    return(cluster);
+}
+
+WholeFile openFile(char* shortFileName,WholeFile directory,int16_t* fAT,BootSector bS,int fd)
+{
+    DirectoryEntry *directoryData = directory.data;
+    int directorySize = (directory.clusterCount * bS.BPB_SecPerClus * bS.BPB_BytsPerSec)/sizeof(DirectoryEntry);
+
+    int currentValue;
+    for(int i=0;i<directorySize;i++)
+    {
+        int match = 0;
+        for(int j=0;j<11;j++)
+        {
+            if(directoryData[i].DIR_Name[j] == shortFileName[j]) match++;
+        }
+        if(match == 11)
+        {
+            currentValue = directoryData[i].DIR_FstClusLO;
+        }
+    }
+    int clusterCount = 0;
+    uint8_t *totalclusters = malloc(bS.BPB_SecPerClus*bS.BPB_BytsPerSec);
+    while(currentValue>-1)
+    {
+        printf("Cluster[%i] is: 0x%04X\n",clusterCount,currentValue);
+        clusterCount ++;
+        totalclusters = realloc(totalclusters,bS.BPB_SecPerClus*bS.BPB_BytsPerSec*clusterCount);
+        uint8_t *newCluster = getCluster(currentValue,bS,fd);
+        for(int i=0;i<bS.BPB_SecPerClus*bS.BPB_BytsPerSec;i++)
+        {
+            totalclusters[(totalclusters,bS.BPB_SecPerClus*bS.BPB_BytsPerSec*(clusterCount-1))+i] = newCluster[i];
+        }
+        currentValue = fAT[currentValue];
+    }
+    WholeFile output;
+    output.clusterCount = clusterCount;
+    output.data = totalclusters;
+    return(output);
 }
 
 int main()
@@ -180,6 +275,9 @@ int main()
 
     //Reading the BootSector
     BootSector bootSector = readBootSector(fd);
+
+    //Calculating the cluster size (this is important for later)
+    int clusterSize = bootSector.BPB_SecPerClus * bootSector.BPB_BytsPerSec;
 
     //FAT OffSet and Size Calculation
     int fATOffSet = bootSector.BPB_BytsPerSec * bootSector.BPB_RsvdSecCnt;
@@ -206,12 +304,12 @@ int main()
     printf("BPB_BytsPerSec: %i\n",  bootSector.BPB_BytsPerSec);
     printf("BPB_SecPerClus: %i\n",  bootSector.BPB_SecPerClus);
     printf("BPB_RsvdSecCnt: %i\n",  bootSector.BPB_RsvdSecCnt);
-    printf("BPB_NumFATs: %i\n",     bootSector.BPB_NumFATs);
+    printf("BPB_NumFATs:    %i\n",  bootSector.BPB_NumFATs);
     printf("BPB_RootEntCnt: %i\n",  bootSector.BPB_RootEntCnt);
-    printf("BPB_TotSec16: %i\n",    bootSector.BPB_TotSec16);
-    printf("BPB_FATSz16: %i\n",     bootSector.BPB_FATSz16);
-    printf("BPB_TotSec32: %i\n",    bootSector.BPB_TotSec32);
-    printf("BS_VolLab: {%i",        bootSector.BS_VolLab[0]);
+    printf("BPB_TotSec16:   %i\n",  bootSector.BPB_TotSec16);
+    printf("BPB_FATSz16:    %i\n",  bootSector.BPB_FATSz16);
+    printf("BPB_TotSec32:   %i\n",  bootSector.BPB_TotSec32);
+    printf("BS_VolLab:      {%i",   bootSector.BS_VolLab[0]);
     for(int i=1;i<11;i++)
     {
         printf(",%i",bootSector.BS_VolLab[i]);
@@ -219,47 +317,34 @@ int main()
     printf("}\n\n");
 
     //Printing the Root Directory
-    printf("    FILE-NAME      ATTR      WRT-TIME    WRT-DATE      FIRST-CLSTR  FILE-SIZE\n");
-    for(int i=0;i<bootSector.BPB_RootEntCnt;i++)
+    printDirectory(rootDirectory,bootSector.BPB_RootEntCnt);
+
+    WholeFile rootFolder;
+    rootFolder.data = rootDirectory;
+    rootFolder.clusterCount = bootSector.BPB_RootEntCnt*sizeof(DirectoryEntry)/clusterSize;
+
+    //Opening and Printing A Txt File From the root directory
+    WholeFile fileA = openFile("SESSIONSTXT",rootFolder,firstFAT,bootSector,fd);
+    char *textData = fileA.data;
+    for(int i=0;i<fileA.clusterCount*clusterSize;i++)
     {
-        DirectoryEntry currentDE = rootDirectory[i];
-        if(
-            !(currentDE.DIR_Name[0] == 0x00 ||currentDE.DIR_Name[0] == 0xE5)                             //Don't print in case the first byte of the name is 0x00 or 0xE5
-            &&
-            !(((currentDE.DIR_Attr >> 0) & 0x0F) == 0x0F && ((currentDE.DIR_Attr >> 4) & 0x03) == 0x00)  //Don't print if the first 4 bits of the attribute are 1 and last 2 bits of the attribute are 0
-        )
-        {
-            printDirectoryEntry(currentDE);
-        }
-
+        printf("%c",textData[i]);
     }
+    free(fileA.data);
+    
+    //Opening a folder and then Printing the folder (hopefully)
+    WholeFile folderA = openFile("MAN        ",rootFolder,firstFAT,bootSector,fd);
+    DirectoryEntry *dirData = folderA.data;
+    printDirectory(dirData,(folderA.clusterCount*clusterSize)/sizeof(DirectoryEntry));
 
-    //Too much to display I think everything is correct.
-    /*
-    for(int i=0;i<600;i++)
-    {
-        printf("FAT Array[%i]:%i\n",i,firstFAT[i]);
-    }
-    */
+    //Opening a folder inside another folder
+    WholeFile folderB = openFile("MAN2       ",folderA,firstFAT,bootSector,fd);
+    DirectoryEntry *dirData2 = folderB.data;
+    printDirectory(dirData2,(folderB.clusterCount*clusterSize)/sizeof(DirectoryEntry));
 
-    //Linked List Test
-    /*
-    struct LinkedListElement *head = NULL;
-    head = malloc(sizeof(struct LinkedListElement));
 
-    head->value = 5;   //Search Head Value
-    head->nextElement = NULL;
-
-    int currentValue = head->value;
-    while(currentValue>=0)
-    {
-        addToList(head,firstFAT[currentValue]);
-        currentValue = firstFAT[currentValue];
-    }
-    printList(head);
-    freeList(head);
-    */
-
+    free(folderA.data);
+    free(folderB.data);
     free(rootDirectory);
     free(firstFAT);
     close(fd);
